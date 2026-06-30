@@ -6,7 +6,7 @@ import { CardWorldPixelPass } from '../effects/CardWorldPixelPass';
 import { CardWorldStylizedPass } from '../effects/CardWorldStylizedPass';
 import type { GameProfile, OnlinePlayerState, PlacedFurniture } from '../types/shared';
 import { normalizeAvatarLoadout, normalizeProfile } from '../types/shared';
-import type { MapId, NpcDef, Rect } from '../world/types';
+import type { MapDef, MapId, NpcDef, Rect } from '../world/types';
 import { MapManager } from '../world/managers/MapManager';
 import { DoorManager } from '../world/managers/DoorManager';
 import { NpcManager } from '../world/managers/NpcManager';
@@ -23,6 +23,10 @@ const PLAYER_BOUND_BOTTOM = 48;
 const PLAYER_START_X = 512;
 const PLAYER_START_Y = 390;
 const POSITION_SAVE_INTERVAL_MS = 2500;
+const MAIN_CAMERA_FOV_DEGREES = 35;
+const MAIN_CAMERA_TILT_FROM_VERTICAL_DEGREES = 20;
+const MAIN_CAMERA_HEIGHT = 1450;
+const MAIN_CAMERA_LATERAL_OFFSET = MAIN_CAMERA_HEIGHT * Math.tan(THREE.MathUtils.degToRad(MAIN_CAMERA_TILT_FROM_VERTICAL_DEGREES));
 type BuildMode = 'none' | 'place' | 'delete';
 interface PlacementState { furnitureId: string; ghost: THREE.Group | null; rotation: number; }
 export interface ThreeGameCallbacks { isInputBlocked: () => boolean; onMenuToggle: () => void; onNpcInteract: (npc: NpcDef) => void; onMapChanged?: (mapId: MapId) => void; onPrompt?: (text: string | null) => void; onCoordinatesChanged?: (x: number, y: number, mapId: MapId) => void; onPositionSave?: (mapId: MapId, x: number, y: number) => void; onFurniturePlaced?: (placedFurniture: PlacedFurniture[]) => void; }
@@ -39,7 +43,7 @@ export class ThreeGame {
   private debugLayer = new THREE.Group();
   private rotatingModelLayer = new THREE.Group();
   private rotatingModels: RotatingWorldModel[] = [];
-  private camera!: THREE.OrthographicCamera;
+  private camera!: THREE.PerspectiveCamera;
   private input = new Input();
   private players = new Map<string, PrototypePlayerModel>();
   private local: OnlinePlayerState;
@@ -56,20 +60,21 @@ export class ThreeGame {
   private pointer = new THREE.Vector2();
   private groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
 
-  // Optional experimental shader. Direct rendering is the default stable path.
+  // Optional legacy pixel shader. Direct rendering remains available as fallback.
   private usePixelShader = false;
   private pixelSize = 3;
-  private normalEdgeCoefficient = 0.3;
-  private depthEdgeCoefficient = 0.4;
+  private normalEdgeCoefficient = 0.35;
+  private depthEdgeCoefficient = 0.35;
   private pixelPass: CardWorldPixelPass | null = null;
 
   // Main experimental style pass. Press F4 to toggle it.
+  // This now uses the Earthmover-style depthTexture + normal pass, not the darker old stylized pass.
   private useStylizedShader = true;
-  private stylizedPixelSize = 2;
-  private stylizedColorLevels = 6;
-  private stylizedOutlineStrength = 9.0;
-  private stylizedNormalStrength = 1.15;
-  private stylizedDitherStrength = 0.07;
+  private stylizedPixelSize = 3;
+  private stylizedColorLevels = 0;
+  private stylizedOutlineStrength = 1.0;
+  private stylizedNormalStrength = 1.0;
+  private stylizedDitherStrength = 0.0;
   private stylizedPass: CardWorldStylizedPass | null = null;
 
   constructor(private canvas: HTMLCanvasElement, profile: GameProfile, private callbacks: ThreeGameCallbacks) {
@@ -82,6 +87,7 @@ export class ThreeGame {
   }
 
   async start(): Promise<void> {
+    console.info('[CardWorld] Earthmover overworld/shader v6 OUTPUT COLOR FIX ThreeGame.ts loaded');
     this.initRenderer();
     this.setupLayers();
     this.registerExternalEvents();
@@ -98,10 +104,12 @@ export class ThreeGame {
   private initRenderer(): void {
     this.renderer.setPixelRatio(window.devicePixelRatio || 1);
     this.renderer.setSize(window.innerWidth, window.innerHeight, false);
-    this.renderer.setClearColor('#15202b', 1);
-    this.scene.background = new THREE.Color('#15202b');
-    this.camera = new THREE.OrthographicCamera(-window.innerWidth / 2, window.innerWidth / 2, window.innerHeight / 2, -window.innerHeight / 2, 1, 5000);
-    this.camera.position.set(0, 900, 900);
+    this.renderer.setClearColor(0x5f9cb0, 1);
+    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    this.renderer.shadowMap.enabled = false;
+    this.scene.background = new THREE.Color(0x5f9cb0);
+    this.camera = new THREE.PerspectiveCamera(MAIN_CAMERA_FOV_DEGREES, window.innerWidth / window.innerHeight, 1, 5000);
+    this.camera.position.set(0, MAIN_CAMERA_HEIGHT, MAIN_CAMERA_LATERAL_OFFSET);
     this.camera.lookAt(0, 0, 0);
     this.pixelPass = new CardWorldPixelPass(this.renderer, this.scene, this.camera, { pixelSize: this.pixelSize, normalEdgeCoefficient: this.normalEdgeCoefficient, depthEdgeCoefficient: this.depthEdgeCoefficient });
     this.stylizedPass = new CardWorldStylizedPass(this.renderer, this.scene, this.camera, {
@@ -110,20 +118,25 @@ export class ThreeGame {
       ditherStrength: this.stylizedDitherStrength,
       outlineStrength: this.stylizedOutlineStrength,
       normalStrength: this.stylizedNormalStrength,
-      outlineThreshold: 0.04,
+      outlineThreshold: 0.045,
       normalThreshold: 0.16,
       outlineColor: 0x182238,
-      shadowStrength: 0.1
+      shadowStrength: 0.0,
+      normalEdgeStrength: 0.35,
+      depthEdgeStrength: 0.35,
+      outlineInkStrength: 0.62,
+      brightness: 1.05,
+      contrast: 1.05,
+      saturation: 1.05,
+      gamma: 1.0,
+      shadowLift: 0.0
     });
     window.addEventListener('resize', () => this.resize());
   }
 
   private resize(): void {
     this.renderer.setSize(window.innerWidth, window.innerHeight, false);
-    this.camera.left = -window.innerWidth / 2;
-    this.camera.right = window.innerWidth / 2;
-    this.camera.top = window.innerHeight / 2;
-    this.camera.bottom = -window.innerHeight / 2;
+    this.camera.aspect = window.innerWidth / window.innerHeight;
     this.camera.updateProjectionMatrix();
     this.pixelPass?.resize(window.innerWidth, window.innerHeight);
     this.stylizedPass?.resize(window.innerWidth, window.innerHeight);
@@ -131,10 +144,11 @@ export class ThreeGame {
 
   private setupLayers(): void {
     this.scene.add(this.floorLayer, this.furnitureLayer, this.objectLayer, this.npcLayer, this.placementLayer, this.rotatingModelLayer, this.debugLayer);
-    this.scene.add(new THREE.AmbientLight(0xffffff, 1.15));
-    const directional = new THREE.DirectionalLight(0xffffff, 0.25);
-    directional.position.set(200, 600, 400);
-    this.scene.add(directional);
+    this.scene.add(new THREE.AmbientLight(0x8ea6c4, 1.75));
+    const sun = new THREE.DirectionalLight(0xfff0b8, 1.15);
+    sun.position.set(450, 900, 350);
+    sun.castShadow = false;
+    this.scene.add(sun);
   }
 
   private registerExternalEvents(): void {
@@ -185,8 +199,79 @@ export class ThreeGame {
     this.callbacks.onPositionSave?.(mapId, this.local.x, this.local.y);
   }
 
+  private isEarthmoverTerrainMap(map: MapDef): boolean {
+    return map.category === 'town';
+  }
+
+  private terrainMaterial(color: number): THREE.MeshPhongMaterial {
+    return new THREE.MeshPhongMaterial({
+      color,
+      flatShading: true,
+      shininess: 0,
+      specular: 0x000000,
+      emissive: new THREE.Color(color).multiplyScalar(0.04)
+    });
+  }
+
+  private addTerrainBlock(parent: THREE.Group, x: number, z: number, w: number, h: number, d: number, color: number): void {
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), this.terrainMaterial(color));
+    mesh.position.set(x, h / 2 - 2, z);
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
+    parent.add(mesh);
+  }
+
+  private seededNoise(seed: number): () => number {
+    let s = seed >>> 0;
+    return () => {
+      s = (s * 1664525 + 1013904223) >>> 0;
+      return s / 0xffffffff;
+    };
+  }
+
+  private drawEarthmoverTerrain(map: MapDef): void {
+    this.scene.background = new THREE.Color(0x5f9cb0);
+    this.renderer.setClearColor(0x5f9cb0, 1);
+    const terrain = new THREE.Group();
+    terrain.name = `EarthmoverTerrain:${map.id}`;
+    this.floorLayer.add(terrain);
+    const cx = map.width / 2;
+    const cz = map.height / 2;
+    this.addTerrainBlock(terrain, cx, cz, map.width, 8, map.height, 0x38792d);
+    const palette = [0x85b263, 0xa5d773, 0x567b5f, 0x2f6f2b, 0x4f8734, 0x245b31];
+    const random = this.seededNoise(map.id.split('').reduce((sum, ch) => sum + ch.charCodeAt(0), 0) + map.width + map.height);
+    const patchCount = Math.max(30, Math.floor((map.width * map.height) / 55000));
+    for (let i = 0; i < patchCount; i++) {
+      const w = 64 + Math.floor(random() * 144);
+      const d = 48 + Math.floor(random() * 128);
+      const x = 32 + random() * Math.max(1, map.width - 64);
+      const z = 32 + random() * Math.max(1, map.height - 64);
+      const h = 5 + Math.floor(random() * 8);
+      this.addTerrainBlock(terrain, x, z, w, h, d, palette[i % palette.length]);
+    }
+    if (map.id === 'town_square') {
+      this.addTerrainBlock(terrain, 560, 360, 390, 34, 170, 0xbbae91);
+      this.addTerrainBlock(terrain, 560, 425, 280, 58, 105, 0xa89a80);
+      this.addTerrainBlock(terrain, 690, 500, 135, 22, 85, 0x8f8374);
+      this.addTerrainBlock(terrain, 775, 535, 110, 18, 70, 0x7d7467);
+      this.addTerrainBlock(terrain, 260, 340, 82, 120, 82, 0x8f8374);
+      this.addTerrainBlock(terrain, 410, 315, 78, 155, 78, 0x6f6974);
+      this.addTerrainBlock(terrain, 900, 320, 95, 145, 95, 0x4b4a42);
+      this.addTerrainBlock(terrain, 1040, 560, 105, 180, 105, 0x2c2d40);
+      this.addTerrainBlock(terrain, 230, 620, 240, 28, 105, 0x1f4f33);
+      this.addTerrainBlock(terrain, 880, 700, 220, 28, 105, 0x1f4f33);
+      this.addTerrainBlock(terrain, 1110, 780, 180, 30, 92, 0x254d36);
+    }
+  }
+
   private drawFloor(id: MapId): void {
     const map = MapManager.getMap(id);
+    if (this.isEarthmoverTerrainMap(map)) {
+      this.drawEarthmoverTerrain(map);
+      return;
+    }
+    this.scene.background = new THREE.Color('#15202b');
+    this.renderer.setClearColor('#15202b', 1);
     if (map.backgroundPath) {
       void this.loadTexture(map.backgroundPath).then((texture) => {
         if (this.currentMapId !== id) return;
@@ -201,13 +286,12 @@ export class ThreeGame {
     floor.rotation.x = -Math.PI / 2;
     floor.position.set(map.width / 2, -2, map.height / 2);
     this.floorLayer.add(floor);
-    const grid = new THREE.GridHelper(Math.max(map.width, map.height), Math.ceil(Math.max(map.width, map.height) / 32), 0x335577, 0x223344);
-    grid.position.set(map.width / 2, -1.5, map.height / 2);
-    this.floorLayer.add(grid);
   }
 
   private async drawMapObjects(id: MapId): Promise<void> {
-    const objects = [...(MapManager.getMap(id).objects ?? [])].sort((a, b) => (a.zIndex ?? 0) - (b.zIndex ?? 0));
+    const map = MapManager.getMap(id);
+    if (this.isEarthmoverTerrainMap(map)) return;
+    const objects = [...(map.objects ?? [])].sort((a, b) => (a.zIndex ?? 0) - (b.zIndex ?? 0));
     for (const object of objects) {
       const texture = await this.loadTexture(object.spritePath);
       if (this.currentMapId !== id) return;
@@ -373,7 +457,7 @@ export class ThreeGame {
     if (!player) return;
     player.position.set(this.local.x, 0, this.local.y);
     player.update(this.local.moving, this.local.avatar, dt, this.local.direction);
-    this.camera.position.set(this.local.x, 900, this.local.y + 900);
+    this.camera.position.set(this.local.x, MAIN_CAMERA_HEIGHT, this.local.y + MAIN_CAMERA_LATERAL_OFFSET);
     this.camera.lookAt(this.local.x, 0, this.local.y);
   }
   private savePositionPeriodically(): void { const t = performance.now(); if (t - this.lastPositionSave <= POSITION_SAVE_INTERVAL_MS) return; this.lastPositionSave = t; this.callbacks.onPositionSave?.(this.currentMapId, this.local.x, this.local.y); }
