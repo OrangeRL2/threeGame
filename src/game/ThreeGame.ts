@@ -77,6 +77,15 @@ export class ThreeGame {
   private stylizedDitherStrength = 0.0;
   private stylizedPass: CardWorldStylizedPass | null = null;
 
+  // Debug camera controls. Press O to open/close the camera tuning panel.
+  private cameraDebugVisible = false;
+  private cameraDebugPanel: HTMLDivElement | null = null;
+  private cameraFovDegrees = 35;
+  private cameraTiltFromVerticalDegrees = 42;
+  private cameraYawDegrees = 180;
+  private cameraHeight = 900;
+  private cameraTargetYOffset = 34;
+
   constructor(private canvas: HTMLCanvasElement, profile: GameProfile, private callbacks: ThreeGameCallbacks) {
     this.profile = normalizeProfile(profile);
     const mapId = MapManager.safeMapId(this.profile.currentMapId);
@@ -87,9 +96,10 @@ export class ThreeGame {
   }
 
   async start(): Promise<void> {
-    console.info('[CardWorld] Earthmover overworld/shader v6 OUTPUT COLOR FIX ThreeGame.ts loaded');
+    console.info('[CardWorld] Earthmover overworld/shader v7 CAMERA GUI + STILL AVATAR ThreeGame.ts loaded');
     this.initRenderer();
     this.setupLayers();
+    this.installCameraDebugGui();
     this.registerExternalEvents();
     this.registerPlacementEvents();
     this.loadMap(this.currentMapId, { x: this.local.x, y: this.local.y });
@@ -108,9 +118,8 @@ export class ThreeGame {
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.shadowMap.enabled = false;
     this.scene.background = new THREE.Color(0x5f9cb0);
-    this.camera = new THREE.PerspectiveCamera(MAIN_CAMERA_FOV_DEGREES, window.innerWidth / window.innerHeight, 1, 5000);
-    this.camera.position.set(0, MAIN_CAMERA_HEIGHT, MAIN_CAMERA_LATERAL_OFFSET);
-    this.camera.lookAt(0, 0, 0);
+    this.camera = new THREE.PerspectiveCamera(this.cameraFovDegrees, window.innerWidth / window.innerHeight, 1, 5000);
+    this.updateCameraForTarget(0, 0);
     this.pixelPass = new CardWorldPixelPass(this.renderer, this.scene, this.camera, { pixelSize: this.pixelSize, normalEdgeCoefficient: this.normalEdgeCoefficient, depthEdgeCoefficient: this.depthEdgeCoefficient });
     this.stylizedPass = new CardWorldStylizedPass(this.renderer, this.scene, this.camera, {
       pixelSize: this.stylizedPixelSize,
@@ -137,6 +146,7 @@ export class ThreeGame {
   private resize(): void {
     this.renderer.setSize(window.innerWidth, window.innerHeight, false);
     this.camera.aspect = window.innerWidth / window.innerHeight;
+    this.camera.fov = this.cameraFovDegrees;
     this.camera.updateProjectionMatrix();
     this.pixelPass?.resize(window.innerWidth, window.innerHeight);
     this.stylizedPass?.resize(window.innerWidth, window.innerHeight);
@@ -151,6 +161,140 @@ export class ThreeGame {
     this.scene.add(sun);
   }
 
+  private installCameraDebugGui(): void {
+    const panel = document.createElement('div');
+    panel.id = 'cardworld-camera-debug-panel';
+    panel.style.cssText = [
+      'position:fixed',
+      'right:16px',
+      'top:16px',
+      'z-index:120',
+      'width:330px',
+      'padding:14px',
+      'border:2px solid #66d9ff',
+      'border-radius:12px',
+      'background:rgba(8,12,30,0.94)',
+      'color:#f6f7ff',
+      'font:12px/1.35 system-ui,sans-serif',
+      'box-shadow:0 10px 35px rgba(0,0,0,0.45)',
+      'display:none',
+      'pointer-events:auto'
+    ].join(';');
+
+    const title = document.createElement('div');
+    title.innerHTML = '<b>Camera Debug</b> <span style="color:#8fefff">press O to close</span><br><span style="color:#b9c7e9">Tune angle/distance for HD-2D / Octopath-like view.</span>';
+    title.style.marginBottom = '10px';
+    panel.appendChild(title);
+
+    const addNumberSlider = (
+      label: string,
+      get: () => number,
+      set: (value: number) => void,
+      min: number,
+      max: number,
+      step: number
+    ) => {
+      const row = document.createElement('label');
+      row.style.cssText = 'display:grid;grid-template-columns:95px 1fr 72px;gap:8px;align-items:center;margin:8px 0';
+
+      const name = document.createElement('span');
+      name.textContent = label;
+
+      const range = document.createElement('input');
+      range.type = 'range';
+      range.min = String(min);
+      range.max = String(max);
+      range.step = String(step);
+      range.value = String(get());
+
+      const number = document.createElement('input');
+      number.type = 'number';
+      number.min = String(min);
+      number.max = String(max);
+      number.step = String(step);
+      number.value = String(get());
+      number.style.cssText = 'width:72px;background:#10182f;color:#fff;border:1px solid #66d9ff;border-radius:6px;padding:3px 5px';
+
+      const apply = (raw: string) => {
+        const value = Number(raw);
+        if (!Number.isFinite(value)) return;
+        const clamped = Math.max(min, Math.min(max, value));
+        set(clamped);
+        range.value = String(clamped);
+        number.value = String(clamped);
+        this.applyCameraDebugSettings();
+      };
+
+      range.addEventListener('input', () => apply(range.value));
+      number.addEventListener('change', () => apply(number.value));
+      number.addEventListener('keydown', (event) => event.stopPropagation());
+      range.addEventListener('keydown', (event) => event.stopPropagation());
+
+      row.append(name, range, number);
+      panel.appendChild(row);
+    };
+
+    addNumberSlider('FOV', () => this.cameraFovDegrees, (v) => this.cameraFovDegrees = v, 20, 60, 1);
+    addNumberSlider('Tilt', () => this.cameraTiltFromVerticalDegrees, (v) => this.cameraTiltFromVerticalDegrees = v, 5, 75, 1);
+    addNumberSlider('Yaw', () => this.cameraYawDegrees, (v) => this.cameraYawDegrees = v, 0, 360, 1);
+    addNumberSlider('Height', () => this.cameraHeight, (v) => this.cameraHeight = v, 250, 2400, 10);
+    addNumberSlider('Target Y', () => this.cameraTargetYOffset, (v) => this.cameraTargetYOffset = v, 0, 220, 1);
+
+    const presets = document.createElement('div');
+    presets.style.cssText = 'display:flex;gap:8px;flex-wrap:wrap;margin-top:10px';
+    const makeButton = (text: string, apply: () => void) => {
+      const button = document.createElement('button');
+      button.textContent = text;
+      button.style.cssText = 'border:1px solid #66d9ff;background:#16304a;color:#fff;border-radius:8px;padding:6px 8px;font-weight:700';
+      button.addEventListener('click', () => {
+        apply();
+        this.refreshCameraDebugGui();
+        this.applyCameraDebugSettings();
+      });
+      return button;
+    };
+    presets.append(
+      makeButton('Octopath-ish', () => { this.cameraFovDegrees = 35; this.cameraTiltFromVerticalDegrees = 42; this.cameraYawDegrees = 180; this.cameraHeight = 900; this.cameraTargetYOffset = 34; }),
+      makeButton('Closer', () => { this.cameraFovDegrees = 32; this.cameraTiltFromVerticalDegrees = 48; this.cameraYawDegrees = 180; this.cameraHeight = 650; this.cameraTargetYOffset = 45; }),
+      makeButton('Top Down', () => { this.cameraFovDegrees = 35; this.cameraTiltFromVerticalDegrees = 20; this.cameraYawDegrees = 180; this.cameraHeight = 1450; this.cameraTargetYOffset = 0; })
+    );
+    panel.appendChild(presets);
+
+    document.body.appendChild(panel);
+    this.cameraDebugPanel = panel;
+  }
+
+  private refreshCameraDebugGui(): void {
+    if (!this.cameraDebugPanel) return;
+    const inputs = Array.from(this.cameraDebugPanel.querySelectorAll('input'));
+    const values = [this.cameraFovDegrees, this.cameraFovDegrees, this.cameraTiltFromVerticalDegrees, this.cameraTiltFromVerticalDegrees, this.cameraYawDegrees, this.cameraYawDegrees, this.cameraHeight, this.cameraHeight, this.cameraTargetYOffset, this.cameraTargetYOffset];
+    inputs.forEach((input, index) => { (input as HTMLInputElement).value = String(values[index] ?? (input as HTMLInputElement).value); });
+  }
+
+  private toggleCameraDebugGui(): void {
+    this.cameraDebugVisible = !this.cameraDebugVisible;
+    if (this.cameraDebugPanel) this.cameraDebugPanel.style.display = this.cameraDebugVisible ? 'block' : 'none';
+  }
+
+  private applyCameraDebugSettings(): void {
+    if (!this.camera) return;
+    this.camera.fov = this.cameraFovDegrees;
+    this.camera.aspect = window.innerWidth / window.innerHeight;
+    this.camera.updateProjectionMatrix();
+    this.updateCameraForTarget(this.local.x, this.local.y);
+  }
+
+  private updateCameraForTarget(x: number, y: number): void {
+    if (!this.camera) return;
+    const tilt = THREE.MathUtils.degToRad(this.cameraTiltFromVerticalDegrees);
+    const yaw = THREE.MathUtils.degToRad(this.cameraYawDegrees);
+    const lateral = this.cameraHeight * Math.tan(tilt);
+    const offsetX = Math.sin(yaw) * lateral;
+    const offsetZ = Math.cos(yaw) * lateral;
+    this.camera.position.set(x + offsetX, this.cameraHeight, y + offsetZ);
+    this.camera.lookAt(x, this.cameraTargetYOffset, y);
+  }
+
   private registerExternalEvents(): void {
     window.addEventListener('cardworld:travel', (event) => { const detail = (event as CustomEvent).detail as { mapId: MapId; x: number; y: number }; this.loadMap(detail.mapId, { x: detail.x, y: detail.y }); });
     window.addEventListener('cardworld:profile-updated', (event) => { this.profile = normalizeProfile((event as CustomEvent).detail.profile); this.redrawFurniture(); });
@@ -163,6 +307,7 @@ export class ThreeGame {
     window.addEventListener('keydown', (event) => {
       const key = event.key.toLowerCase();
       if (key === 'escape' && this.buildMode !== 'none') this.exitBuildMode();
+      if (key === 'o') this.toggleCameraDebugGui();
       if (key === 'r' && this.placement) void this.rotatePlacement();
     });
     this.canvas.addEventListener('mousemove', (event) => this.updatePlacementGhost(event));
@@ -457,8 +602,7 @@ export class ThreeGame {
     if (!player) return;
     player.position.set(this.local.x, 0, this.local.y);
     player.update(this.local.moving, this.local.avatar, dt, this.local.direction);
-    this.camera.position.set(this.local.x, MAIN_CAMERA_HEIGHT, this.local.y + MAIN_CAMERA_LATERAL_OFFSET);
-    this.camera.lookAt(this.local.x, 0, this.local.y);
+    this.updateCameraForTarget(this.local.x, this.local.y);
   }
   private savePositionPeriodically(): void { const t = performance.now(); if (t - this.lastPositionSave <= POSITION_SAVE_INTERVAL_MS) return; this.lastPositionSave = t; this.callbacks.onPositionSave?.(this.currentMapId, this.local.x, this.local.y); }
   private redrawDebug(): void { this.clearGroup(this.debugLayer); this.drawDebug(this.currentMapId); }
