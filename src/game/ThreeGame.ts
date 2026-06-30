@@ -1,0 +1,388 @@
+import * as THREE from 'three';
+import { Input } from './Input';
+import { PrototypePlayerModel } from '../entities/PrototypePlayerModel';
+import { RotatingWorldModel } from '../entities/RotatingWorldModel';
+import { CardWorldPixelPass } from '../effects/CardWorldPixelPass';
+import { CardWorldStylizedPass } from '../effects/CardWorldStylizedPass';
+import type { GameProfile, OnlinePlayerState, PlacedFurniture } from '../types/shared';
+import { normalizeAvatarLoadout, normalizeProfile } from '../types/shared';
+import type { MapId, NpcDef, Rect } from '../world/types';
+import { MapManager } from '../world/managers/MapManager';
+import { DoorManager } from '../world/managers/DoorManager';
+import { NpcManager } from '../world/managers/NpcManager';
+import { CollisionManager } from '../world/managers/CollisionManager';
+import { InteractionManager } from '../world/managers/InteractionManager';
+import { FurnitureManager } from '../hq/managers/FurnitureManager';
+import { PlacementManager } from '../hq/managers/PlacementManager';
+
+const START_WITH_DEBUG_COLLIDERS = true;
+const PLAYER_BOUND_LEFT = 24;
+const PLAYER_BOUND_RIGHT = 24;
+const PLAYER_BOUND_TOP = 12;
+const PLAYER_BOUND_BOTTOM = 48;
+const PLAYER_START_X = 512;
+const PLAYER_START_Y = 390;
+const POSITION_SAVE_INTERVAL_MS = 2500;
+type BuildMode = 'none' | 'place' | 'delete';
+interface PlacementState { furnitureId: string; ghost: THREE.Group | null; rotation: number; }
+export interface ThreeGameCallbacks { isInputBlocked: () => boolean; onMenuToggle: () => void; onNpcInteract: (npc: NpcDef) => void; onMapChanged?: (mapId: MapId) => void; onPrompt?: (text: string | null) => void; onCoordinatesChanged?: (x: number, y: number, mapId: MapId) => void; onPositionSave?: (mapId: MapId, x: number, y: number) => void; onFurniturePlaced?: (placedFurniture: PlacedFurniture[]) => void; }
+function isHqMap(mapId: MapId): boolean { return mapId === 'hq_room' || mapId === 'hq_garden'; }
+
+export class ThreeGame {
+  private renderer: THREE.WebGLRenderer;
+  private scene = new THREE.Scene();
+  private floorLayer = new THREE.Group();
+  private furnitureLayer = new THREE.Group();
+  private placementLayer = new THREE.Group();
+  private objectLayer = new THREE.Group();
+  private npcLayer = new THREE.Group();
+  private debugLayer = new THREE.Group();
+  private rotatingModelLayer = new THREE.Group();
+  private rotatingModels: RotatingWorldModel[] = [];
+  private camera!: THREE.OrthographicCamera;
+  private input = new Input();
+  private players = new Map<string, PrototypePlayerModel>();
+  private local: OnlinePlayerState;
+  private currentMapId: MapId;
+  private profile: GameProfile;
+  private transitionCooldown = 0;
+  private debugColliders = START_WITH_DEBUG_COLLIDERS;
+  private placement: PlacementState | null = null;
+  private buildMode: BuildMode = 'none';
+  private lastPositionSave = 0;
+  private clock = new THREE.Clock();
+  private loader = new THREE.TextureLoader();
+  private raycaster = new THREE.Raycaster();
+  private pointer = new THREE.Vector2();
+  private groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+
+  // Optional experimental shader. Direct rendering is the default stable path.
+  private usePixelShader = false;
+  private pixelSize = 3;
+  private normalEdgeCoefficient = 0.3;
+  private depthEdgeCoefficient = 0.4;
+  private pixelPass: CardWorldPixelPass | null = null;
+
+  // Main experimental style pass. Press F4 to toggle it.
+  private useStylizedShader = true;
+  private stylizedPixelSize = 2;
+  private stylizedColorLevels = 6;
+  private stylizedOutlineStrength = 9.0;
+  private stylizedNormalStrength = 1.15;
+  private stylizedDitherStrength = 0.07;
+  private stylizedPass: CardWorldStylizedPass | null = null;
+
+  constructor(private canvas: HTMLCanvasElement, profile: GameProfile, private callbacks: ThreeGameCallbacks) {
+    this.profile = normalizeProfile(profile);
+    const mapId = MapManager.safeMapId(this.profile.currentMapId);
+    const saved = mapId === this.profile.currentMapId;
+    this.currentMapId = mapId;
+    this.local = this.createLocalPlayerState(mapId, saved);
+    this.renderer = new THREE.WebGLRenderer({ canvas: this.canvas, antialias: false, alpha: false });
+  }
+
+  async start(): Promise<void> {
+    this.initRenderer();
+    this.setupLayers();
+    this.registerExternalEvents();
+    this.registerPlacementEvents();
+    this.loadMap(this.currentMapId, { x: this.local.x, y: this.local.y });
+    this.createLocalPlayerSprite();
+    this.renderer.setAnimationLoop(() => this.update(this.clock.getDelta()));
+  }
+
+  private createLocalPlayerState(mapId: MapId, saved: boolean): OnlinePlayerState {
+    return { userId: this.profile.userId, displayName: this.profile.displayName?.trim() || 'Orange', mapId, x: saved ? this.profile.position.x : PLAYER_START_X, y: saved ? this.profile.position.y : PLAYER_START_Y, direction: 'down', moving: false, avatar: normalizeAvatarLoadout(this.profile.avatar) };
+  }
+
+  private initRenderer(): void {
+    this.renderer.setPixelRatio(window.devicePixelRatio || 1);
+    this.renderer.setSize(window.innerWidth, window.innerHeight, false);
+    this.renderer.setClearColor('#15202b', 1);
+    this.scene.background = new THREE.Color('#15202b');
+    this.camera = new THREE.OrthographicCamera(-window.innerWidth / 2, window.innerWidth / 2, window.innerHeight / 2, -window.innerHeight / 2, 1, 5000);
+    this.camera.position.set(0, 900, 900);
+    this.camera.lookAt(0, 0, 0);
+    this.pixelPass = new CardWorldPixelPass(this.renderer, this.scene, this.camera, { pixelSize: this.pixelSize, normalEdgeCoefficient: this.normalEdgeCoefficient, depthEdgeCoefficient: this.depthEdgeCoefficient });
+    this.stylizedPass = new CardWorldStylizedPass(this.renderer, this.scene, this.camera, {
+      pixelSize: this.stylizedPixelSize,
+      colorLevels: this.stylizedColorLevels,
+      ditherStrength: this.stylizedDitherStrength,
+      outlineStrength: this.stylizedOutlineStrength,
+      normalStrength: this.stylizedNormalStrength,
+      outlineThreshold: 0.04,
+      normalThreshold: 0.16,
+      outlineColor: 0x182238,
+      shadowStrength: 0.1
+    });
+    window.addEventListener('resize', () => this.resize());
+  }
+
+  private resize(): void {
+    this.renderer.setSize(window.innerWidth, window.innerHeight, false);
+    this.camera.left = -window.innerWidth / 2;
+    this.camera.right = window.innerWidth / 2;
+    this.camera.top = window.innerHeight / 2;
+    this.camera.bottom = -window.innerHeight / 2;
+    this.camera.updateProjectionMatrix();
+    this.pixelPass?.resize(window.innerWidth, window.innerHeight);
+    this.stylizedPass?.resize(window.innerWidth, window.innerHeight);
+  }
+
+  private setupLayers(): void {
+    this.scene.add(this.floorLayer, this.furnitureLayer, this.objectLayer, this.npcLayer, this.placementLayer, this.rotatingModelLayer, this.debugLayer);
+    this.scene.add(new THREE.AmbientLight(0xffffff, 1.15));
+    const directional = new THREE.DirectionalLight(0xffffff, 0.25);
+    directional.position.set(200, 600, 400);
+    this.scene.add(directional);
+  }
+
+  private registerExternalEvents(): void {
+    window.addEventListener('cardworld:travel', (event) => { const detail = (event as CustomEvent).detail as { mapId: MapId; x: number; y: number }; this.loadMap(detail.mapId, { x: detail.x, y: detail.y }); });
+    window.addEventListener('cardworld:profile-updated', (event) => { this.profile = normalizeProfile((event as CustomEvent).detail.profile); this.redrawFurniture(); });
+    window.addEventListener('cardworld:start-placement', (event) => void this.startPlacement((event as CustomEvent).detail.furnitureId));
+    window.addEventListener('cardworld:start-furniture-delete', () => this.startDeleteMode());
+    window.addEventListener('cardworld:exit-build-mode', () => this.exitBuildMode());
+  }
+
+  private registerPlacementEvents(): void {
+    window.addEventListener('keydown', (event) => {
+      const key = event.key.toLowerCase();
+      if (key === 'escape' && this.buildMode !== 'none') this.exitBuildMode();
+      if (key === 'r' && this.placement) void this.rotatePlacement();
+    });
+    this.canvas.addEventListener('mousemove', (event) => this.updatePlacementGhost(event));
+    this.canvas.addEventListener('click', (event) => this.handleBuildClick(event));
+  }
+
+  private setBuildMode(mode: BuildMode): void { this.buildMode = mode; window.dispatchEvent(new CustomEvent('cardworld:build-mode-changed', { detail: { active: mode !== 'none', mode } })); }
+  private exitBuildMode(): void { this.cancelPlacement(); this.setBuildMode('none'); this.callbacks.onPrompt?.(null); }
+  private clearGroup(group: THREE.Group): void { while (group.children.length) group.remove(group.children[0]); }
+
+  private loadMap(id: MapId, spawn: { x: number; y: number }): void {
+    const mapId = MapManager.safeMapId(id);
+    const map = MapManager.getMap(mapId);
+    this.currentMapId = mapId;
+    this.local.mapId = mapId;
+    this.local.x = spawn.x;
+    this.local.y = spawn.y;
+    if (!isHqMap(mapId) && this.buildMode !== 'none') this.exitBuildMode();
+    if (this.collidesAt(this.local.x, this.local.y)) {
+      this.local.y += 48;
+      if (this.collidesAt(this.local.x, this.local.y)) {
+        this.local.x = PLAYER_START_X;
+        this.local.y = mapId === 'town_square' ? PLAYER_START_Y : Math.min(620, map.height - PLAYER_BOUND_BOTTOM);
+      }
+    }
+    this.clearGroup(this.floorLayer); this.clearGroup(this.furnitureLayer); this.clearGroup(this.placementLayer); this.clearGroup(this.objectLayer); this.clearGroup(this.npcLayer); this.clearGroup(this.rotatingModelLayer); this.clearGroup(this.debugLayer); this.rotatingModels = [];
+    this.drawFloor(mapId);
+    void this.drawFurniture(mapId);
+    void this.drawMapObjects(mapId);
+    void this.drawNpcs(mapId);
+    this.drawPrototypeDecorations(mapId);
+    this.drawDebug(mapId);
+    this.callbacks.onMapChanged?.(mapId);
+    this.callbacks.onPositionSave?.(mapId, this.local.x, this.local.y);
+  }
+
+  private drawFloor(id: MapId): void {
+    const map = MapManager.getMap(id);
+    if (map.backgroundPath) {
+      void this.loadTexture(map.backgroundPath).then((texture) => {
+        if (this.currentMapId !== id) return;
+        const mesh = new THREE.Mesh(new THREE.PlaneGeometry(map.width, map.height), new THREE.MeshBasicMaterial({ map: texture }));
+        mesh.rotation.x = -Math.PI / 2;
+        mesh.position.set(map.width / 2, -2, map.height / 2);
+        this.floorLayer.add(mesh);
+      });
+      return;
+    }
+    const floor = new THREE.Mesh(new THREE.PlaneGeometry(map.width, map.height), new THREE.MeshBasicMaterial({ color: map.theme }));
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.set(map.width / 2, -2, map.height / 2);
+    this.floorLayer.add(floor);
+    const grid = new THREE.GridHelper(Math.max(map.width, map.height), Math.ceil(Math.max(map.width, map.height) / 32), 0x335577, 0x223344);
+    grid.position.set(map.width / 2, -1.5, map.height / 2);
+    this.floorLayer.add(grid);
+  }
+
+  private async drawMapObjects(id: MapId): Promise<void> {
+    const objects = [...(MapManager.getMap(id).objects ?? [])].sort((a, b) => (a.zIndex ?? 0) - (b.zIndex ?? 0));
+    for (const object of objects) {
+      const texture = await this.loadTexture(object.spritePath);
+      if (this.currentMapId !== id) return;
+      const mesh = this.plane(texture, object.w, object.h, 'top-left');
+      mesh.position.set(object.x + object.w / 2, object.h / 2, object.y + object.h / 2);
+      this.objectLayer.add(mesh);
+      if (id === 'town_square') this.objectLayer.add(this.label(object.name, object.x + object.w / 2, object.y - 8));
+    }
+  }
+
+  private async drawNpcs(id: MapId): Promise<void> {
+    for (const npc of NpcManager.getNpcsForMap(id)) {
+      const group = new THREE.Group();
+      group.position.set(npc.x, 0, npc.y);
+      const texture = await this.loadTexture(npc.spritePath);
+      if (this.currentMapId !== id) return;
+      group.add(this.plane(texture, npc.w, npc.h, 'feet'));
+      group.add(this.labelSprite(npc.name, 0, npc.h + 4));
+      this.npcLayer.add(group);
+    }
+  }
+
+  private async drawFurniture(id: MapId): Promise<void> {
+    for (const placed of this.profile.placedFurniture.filter((item) => item.mapId === id)) {
+      const def = FurnitureManager.getById(placed.furnitureId);
+      if (!def) continue;
+      const texture = await this.loadTexture(FurnitureManager.getSpritePath(def, placed.rotation));
+      if (this.currentMapId !== id) return;
+      const group = new THREE.Group();
+      group.position.set(placed.x, 0, placed.y);
+      group.add(this.plane(texture, def.w, def.h, 'feet'));
+      this.furnitureLayer.add(group);
+    }
+  }
+
+
+  private drawPrototypeDecorations(mapId: MapId): void {
+    if (mapId !== 'town_square') return;
+
+    const shrine = new RotatingWorldModel({
+      name: 'Prototype Crystal Shrine',
+      path: '/assets/prototype/mmd/crystal_shrine/stylised_crystal_shrine.glb',
+      targetHeight: 96,
+      spinSpeed: 0.28
+    });
+    shrine.position.set(690, 0, 500);
+
+    const crystalA = new RotatingWorldModel({
+      name: 'Prototype Crystal A',
+      path: '/assets/prototype/mmd/crystal/crystal.glb',
+      targetHeight: 48,
+      spinSpeed: 1.15
+    });
+    crystalA.position.set(610, 0, 460);
+
+    const crystalB = new RotatingWorldModel({
+      name: 'Prototype Crystal B',
+      path: '/assets/prototype/mmd/crystal/crystal.glb',
+      targetHeight: 36,
+      spinSpeed: -0.9
+    });
+    crystalB.position.set(770, 0, 535);
+
+    const crystalC = new RotatingWorldModel({
+      name: 'Prototype Crystal C',
+      path: '/assets/prototype/mmd/crystal/crystal.glb',
+      targetHeight: 30,
+      spinSpeed: 0.75
+    });
+    crystalC.position.set(650, 0, 585);
+
+    this.rotatingModels.push(shrine, crystalA, crystalB, crystalC);
+    this.rotatingModelLayer.add(shrine, crystalA, crystalB, crystalC);
+  }
+
+  private updateRotatingModels(dt: number): void {
+    for (const model of this.rotatingModels) model.update(dt);
+  }
+
+  private redrawFurniture(): void { this.clearGroup(this.furnitureLayer); void this.drawFurniture(this.currentMapId); this.redrawDebug(); }
+  private createLocalPlayerSprite(): void { const player = new PrototypePlayerModel(this.local.userId, this.local.displayName, this.local.avatar); this.players.set(this.local.userId, player); this.scene.add(player); }
+
+  private async startPlacement(furnitureId: string): Promise<void> {
+    this.cancelPlacement();
+    const def = FurnitureManager.getById(furnitureId);
+    if (!def) return;
+    const map = MapManager.getMap(this.currentMapId);
+    if (!FurnitureManager.canPlaceOnMap(def, map)) return console.warn('Cannot place this furniture here');
+    const texture = await this.loadTexture(FurnitureManager.getSpritePath(def, 0));
+    const group = new THREE.Group();
+    const mesh = this.plane(texture, def.w, def.h, 'feet');
+    (mesh.material as THREE.MeshBasicMaterial).opacity = 0.58;
+    (mesh.material as THREE.MeshBasicMaterial).transparent = true;
+    group.add(mesh);
+    this.placementLayer.add(group);
+    this.placement = { furnitureId, ghost: group, rotation: 0 };
+    this.setBuildMode('place');
+    this.callbacks.onPrompt?.('Build mode: click to place ・ R rotate ・ Esc cancel');
+  }
+
+  private cancelPlacement(): void { if (this.placement?.ghost) this.placementLayer.remove(this.placement.ghost); this.placement = null; }
+  private async rotatePlacement(): Promise<void> { if (!this.placement?.ghost) return; const pos = this.placement.ghost.position.clone(); const id = this.placement.furnitureId; const next = FurnitureManager.nextRotation(this.placement.rotation); this.cancelPlacement(); await this.startPlacement(id); if (this.placement) { this.placement.rotation = next; this.placement.ghost?.position.copy(pos); } }
+  private startDeleteMode(): void { if (!isHqMap(this.currentMapId)) return; this.cancelPlacement(); this.setBuildMode('delete'); this.callbacks.onPrompt?.('Delete mode: click furniture to remove ・ Esc cancel'); }
+  private handleBuildClick(event: MouseEvent): void { if (this.buildMode === 'place') this.placeGhost(event); else if (this.buildMode === 'delete') this.deleteFurnitureAtMouse(event); }
+
+  private worldPointFromMouse(event: MouseEvent): { x: number; y: number } {
+    const rect = this.canvas.getBoundingClientRect();
+    this.pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    this.pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+    this.raycaster.setFromCamera(this.pointer, this.camera);
+    const hit = new THREE.Vector3();
+    this.raycaster.ray.intersectPlane(this.groundPlane, hit);
+    return { x: hit.x, y: hit.z };
+  }
+  private updatePlacementGhost(event: MouseEvent): void { if (!this.placement?.ghost) return; const point = this.worldPointFromMouse(event); const snapped = PlacementManager.snapPoint(point.x, point.y); this.placement.ghost.position.set(snapped.x, 0, snapped.y); }
+  private placeGhost(event: MouseEvent): void { if (!this.placement) return; const point = this.worldPointFromMouse(event); const snapped = PlacementManager.snapPoint(point.x, point.y); const map = MapManager.getMap(this.currentMapId); const check = PlacementManager.canPlace(this.profile, map, this.placement.furnitureId, snapped.x, snapped.y, this.placement.rotation); if (!check.ok) return console.warn(check.reason); const placed: PlacedFurniture = { instanceId: PlacementManager.createInstanceId(), furnitureId: this.placement.furnitureId, mapId: this.currentMapId, x: snapped.x, y: snapped.y, rotation: this.placement.rotation }; this.profile = { ...this.profile, placedFurniture: [...this.profile.placedFurniture, placed] }; this.cancelPlacement(); this.setBuildMode('none'); this.redrawFurniture(); this.callbacks.onFurniturePlaced?.(this.profile.placedFurniture); }
+  private deleteFurnitureAtMouse(event: MouseEvent): void { const point = this.worldPointFromMouse(event); const target = this.findFurnitureAtPoint(point.x, point.y); if (!target) return; this.profile = { ...this.profile, placedFurniture: this.profile.placedFurniture.filter((item) => item.instanceId !== target.instanceId) }; this.redrawFurniture(); this.callbacks.onFurniturePlaced?.(this.profile.placedFurniture); }
+  private findFurnitureAtPoint(x: number, y: number): PlacedFurniture | null { for (const item of [...this.profile.placedFurniture].filter((i) => i.mapId === this.currentMapId).reverse()) { const def = FurnitureManager.getById(item.furnitureId); if (!def) continue; const rect = { x: item.x - def.w / 2, y: item.y - def.h, w: def.w, h: def.h }; if (x >= rect.x && x <= rect.x + rect.w && y >= rect.y && y <= rect.y + rect.h) return item; } return null; }
+
+  private playerColliderAt(x: number, y: number): Rect { return { x: x - 10, y: y - 40, w: 20, h: 35 }; }
+  private getSolidColliders(): Rect[] { return CollisionManager.getSolidColliders(this.currentMapId, this.profile); }
+  private collidesAt(x: number, y: number): boolean { return CollisionManager.collides(this.playerColliderAt(x, y), this.getSolidColliders()); }
+  private nearestNpc(): NpcDef | null { return InteractionManager.findNearestNpc(this.currentMapId, this.local.x, this.local.y); }
+  private checkDoor(): void { if (this.transitionCooldown > 0) return; const door = InteractionManager.findWalkInDoor(this.currentMapId, this.local.x, this.local.y); if (!door) return; this.transitionCooldown = 0.55; this.loadMap(door.targetMapId, door.spawn); }
+
+  private update(dt: number): void {
+    this.transitionCooldown = Math.max(0, this.transitionCooldown - dt);
+    if (this.input.consume('f2')) { this.debugColliders = !this.debugColliders; this.redrawDebug(); }
+    if (this.input.consume('f3')) { this.usePixelShader = !this.usePixelShader; console.info(`Legacy pixel shader ${this.usePixelShader ? 'ON' : 'OFF'}`); }
+    if (this.input.consume('f4')) { this.useStylizedShader = !this.useStylizedShader; console.info(`Stylized shader ${this.useStylizedShader ? 'ON' : 'OFF'}`); }
+    if (this.input.consume('i')) this.callbacks.onMenuToggle();
+    if (this.input.consume('b') && isHqMap(this.currentMapId)) { if (this.buildMode !== 'none') this.exitBuildMode(); else window.dispatchEvent(new CustomEvent('cardworld:open-hq-build-menu')); }
+    const blocked = this.callbacks.isInputBlocked() || this.buildMode === 'place' || this.buildMode === 'delete';
+    if (!blocked && this.input.consume('e')) { const npc = this.nearestNpc(); if (npc) this.callbacks.onNpcInteract(npc); }
+    this.callbacks.onPrompt?.(this.buildMode === 'place' ? 'Build mode: click to place ・ R rotate ・ Esc cancel' : this.buildMode === 'delete' ? 'Delete mode: click furniture to remove ・ Esc cancel' : (!blocked ? InteractionManager.getNpcPrompt(this.nearestNpc()) : null));
+    this.updateMovement(blocked, dt);
+    this.updateLocalPlayerSprite(dt);
+    this.savePositionPeriodically();
+    if (this.debugColliders) this.redrawDebug();
+    this.updateRotatingModels(dt);
+    if (this.useStylizedShader && this.stylizedPass) this.stylizedPass.render();
+    else if (this.usePixelShader && this.pixelPass) this.pixelPass.render();
+    else this.renderer.render(this.scene, this.camera);
+  }
+
+  private updateMovement(blocked: boolean, dt: number): void {
+    let dx = 0, dy = 0;
+    if (!blocked) { if (this.input.left) { dx--; this.local.direction = 'left'; } if (this.input.right) { dx++; this.local.direction = 'right'; } if (this.input.up) { dy--; this.local.direction = 'up'; } if (this.input.down) { dy++; this.local.direction = 'down'; } }
+    if (dx && dy) { dx *= Math.SQRT1_2; dy *= Math.SQRT1_2; }
+    const speed = this.input.running ? 200 : 160;
+    this.local.moving = Boolean(dx || dy);
+    const map = MapManager.getMap(this.currentMapId);
+    const nextX = Math.max(PLAYER_BOUND_LEFT, Math.min(map.width - PLAYER_BOUND_RIGHT, this.local.x + dx * speed * dt));
+    const nextY = Math.max(PLAYER_BOUND_TOP, Math.min(map.height - PLAYER_BOUND_BOTTOM, this.local.y + dy * speed * dt));
+    if (!this.collidesAt(nextX, this.local.y)) this.local.x = nextX;
+    if (!this.collidesAt(this.local.x, nextY)) this.local.y = nextY;
+    if (!blocked) this.checkDoor();
+    this.callbacks.onCoordinatesChanged?.(this.local.x, this.local.y, this.currentMapId);
+  }
+
+  private updateLocalPlayerSprite(dt: number): void {
+    const player = this.players.get(this.local.userId);
+    if (!player) return;
+    player.position.set(this.local.x, 0, this.local.y);
+    player.update(this.local.moving, this.local.avatar, dt, this.local.direction);
+    this.camera.position.set(this.local.x, 900, this.local.y + 900);
+    this.camera.lookAt(this.local.x, 0, this.local.y);
+  }
+  private savePositionPeriodically(): void { const t = performance.now(); if (t - this.lastPositionSave <= POSITION_SAVE_INTERVAL_MS) return; this.lastPositionSave = t; this.callbacks.onPositionSave?.(this.currentMapId, this.local.x, this.local.y); }
+  private redrawDebug(): void { this.clearGroup(this.debugLayer); this.drawDebug(this.currentMapId); }
+  private drawDebug(id: MapId): void { if (!this.debugColliders) return; const add = (r: Rect, color: number, y = 2) => { const pts = [new THREE.Vector3(r.x, y, r.y), new THREE.Vector3(r.x + r.w, y, r.y), new THREE.Vector3(r.x + r.w, y, r.y), new THREE.Vector3(r.x + r.w, y, r.y + r.h), new THREE.Vector3(r.x + r.w, y, r.y + r.h), new THREE.Vector3(r.x, y, r.y + r.h), new THREE.Vector3(r.x, y, r.y + r.h), new THREE.Vector3(r.x, y, r.y)]; this.debugLayer.add(new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color }))); }; for (const collider of this.getSolidColliders()) add(collider, 0xff3333); for (const door of DoorManager.getDoorsForMap(id)) add(door.trigger, 0x66ccff, 3); for (const npc of NpcManager.getNpcsForMap(id)) add({ x: npc.x - npc.interactionRadius, y: npc.y - npc.interactionRadius, w: npc.interactionRadius * 2, h: npc.interactionRadius * 2 }, 0x00ff66, 4); add(this.playerColliderAt(this.local.x, this.local.y), 0xffff00, 5); }
+
+  private async loadTexture(path: string): Promise<THREE.Texture> { return new Promise((resolve) => this.loader.load(path, (texture) => { texture.magFilter = THREE.NearestFilter; texture.minFilter = THREE.NearestFilter; texture.generateMipmaps = false; texture.colorSpace = THREE.SRGBColorSpace; resolve(texture); }, undefined, () => resolve(this.fallbackTexture()))); }
+  private fallbackTexture(): THREE.Texture { const canvas = document.createElement('canvas'); canvas.width = canvas.height = 32; const ctx = canvas.getContext('2d')!; ctx.fillStyle = '#66ccff'; ctx.fillRect(0, 0, 32, 32); ctx.strokeStyle = '#fff'; ctx.strokeRect(2, 2, 28, 28); const texture = new THREE.CanvasTexture(canvas); texture.magFilter = THREE.NearestFilter; texture.minFilter = THREE.NearestFilter; return texture; }
+  private plane(texture: THREE.Texture, w: number, h: number, anchor: 'feet' | 'top-left'): THREE.Mesh { const mesh = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ map: texture, transparent: true, alphaTest: 0.01, depthWrite: false })); if (anchor === 'feet') mesh.position.y = h / 2; return mesh; }
+  private label(text: string, x: number, y: number): THREE.Sprite { const sprite = this.labelSprite(text, 0, 0); sprite.position.set(x, 32, y); return sprite; }
+  private labelSprite(text: string, x: number, y: number): THREE.Sprite { const canvas = document.createElement('canvas'); const ctx = canvas.getContext('2d')!; ctx.font = '700 12px sans-serif'; canvas.width = Math.max(80, Math.ceil(ctx.measureText(text).width) + 12); canvas.height = 24; ctx.font = '700 12px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.lineWidth = 4; ctx.strokeStyle = '#000'; ctx.fillStyle = '#fff'; ctx.strokeText(text, canvas.width / 2, 12); ctx.fillText(text, canvas.width / 2, 12); const texture = new THREE.CanvasTexture(canvas); texture.magFilter = THREE.NearestFilter; const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: texture, transparent: true, depthTest: false })); sprite.scale.set(canvas.width, canvas.height, 1); sprite.position.set(x, y, 0); return sprite; }
+}

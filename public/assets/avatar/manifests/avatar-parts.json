@@ -1,0 +1,192 @@
+{
+  "version": 3,
+  "frameWidth": 32,
+  "frameHeight": 48,
+  "animations": {
+    "idle_down": {
+      "row": 0,
+      "frames": 4,
+      "fps": 2
+    },
+    "idle_up": {
+      "row": 1,
+      "frames": 4,
+      "fps": 2
+    },
+    "idle_left": {
+      "row": 2,
+      "frames": 4,
+      "fps": 2
+    },
+    "idle_right": {
+      "row": 3,
+      "frames": 4,
+      "fps": 2
+    },
+    "walk_down": {
+      "row": 4,
+      "frames": 4,
+      "fps": 8
+    },
+    "walk_up": {
+      "row": 5,
+      "frames": 4,
+      "fps": 8
+    },
+    "walk_left": {
+      "row": 6,
+      "frames": 4,
+      "fps": 8
+    },
+    "walk_right": {
+      "row": 7,
+      "frames": 4,
+      "fps": 8
+    }
+  },
+  "layers": [
+    "body",
+    "face",
+    "bottom",
+    "hair",
+    "outfit",
+    "accessories"
+  ],
+  "bodies": [
+    {
+      "id": "default",
+      "name": "Default",
+      "path": "/assets/avatar/bodies/default/spritesheet.png",
+      "previewPath": "/assets/avatar/bodies/default/preview.png",
+      "unlockType": "starter"
+    }
+  ],
+  "faces": [
+    {
+      "id": "neutral",
+      "name": "Neutral",
+      "path": "/assets/avatar/faces/neutral/spritesheet.png",
+      "previewPath": "/assets/avatar/faces/neutral/preview.png",
+      "unlockType": "starter"
+    }
+  ],
+  "hair": [
+    {
+      "id": "short-side-tail",
+      "name": "Short Side Tail",
+      "path": "/assets/avatar/hair/short-side-tail/spritesheet.png",
+      "previewPath": "/assets/avatar/hair/short-side-tail/preview.png",
+      "unlockType": "starter"
+    },
+    {
+      "id": "short-bob",
+      "name": "Short Bob",
+      "path": "/assets/avatar/hair/short-bob/spritesheet.png",
+      "previewPath": "/assets/avatar/hair/short-bob/preview.png",
+      "unlockType": "starter"
+    },
+    {
+      "id": "long-straight",
+      "name": "Long Straight",
+      "path": "/assets/avatar/hair/long-straight/spritesheet.png",
+      "previewPath": "/assets/avatar/hair/long-straight/preview.png",
+      "unlockType": "starter"
+    }
+  ],
+  "outfits": [
+    {
+      "id": "plaid-idol",
+      "name": "Plaid Idol",
+      "path": "/assets/avatar/outfits/plaid-idol/spritesheet.png",
+      "previewPath": "/assets/avatar/outfits/plaid-idol/preview.png",
+      "unlockType": "starter"
+    },
+    {
+      "id": "office-uniform",
+      "name": "Office Uniform",
+      "path": "/assets/avatar/outfits/office-uniform/spritesheet.png",
+      "previewPath": "/assets/avatar/outfits/office-uniform/preview.png",
+      "unlockType": "starter"
+    },
+    {
+      "id": "casual-hoodie",
+      "name": "Casual Hoodie",
+      "path": "/assets/avatar/outfits/casual-hoodie/spritesheet.png",
+      "previewPath": "/assets/avatar/outfits/casual-hoodie/preview.png",
+      "unlockType": "starter"
+    }
+  ],
+  "bottoms": [
+    {
+      "id": "default-pants",
+      "name": "Default Pants",
+      "path": "/assets/avatar/bottoms/default-pants/spritesheet.png",
+      "previewPath": "/assets/avatar/bottoms/default-pants/preview.png",
+      "unlockType": "starter"
+    },
+    {
+      "id": "blue-skirt",
+      "name": "Blue Skirt",
+      "path": "/assets/avatar/bottoms/blue-skirt/spritesheet.png",
+      "previewPath": "/assets/avatar/bottoms/blue-skirt/preview.png",
+      "unlockType": "starter"
+    },
+    {
+      "id": "black-shorts",
+      "name": "Black Shorts",
+      "path": "/assets/avatar/bottoms/black-shorts/spritesheet.png",
+      "previewPath": "/assets/avatar/bottoms/black-shorts/preview.png",
+      "unlockType": "starter"
+    }
+  ],
+  "accessories": [
+    {
+      "id": "none",
+      "name": "None",
+      "path": "/assets/avatar/accessories/none/spritesheet.png",
+      "previewPath": "/assets/avatar/accessories/none/preview.png",
+      "unlockType": "starter"
+    },
+    {
+      "id": "star-pin",
+      "name": "Star Pin",
+      "path": "/assets/avatar/accessories/star-pin/spritesheet.png",
+      "previewPath": "/assets/avatar/accessories/star-pin/preview.png",
+      "unlockType": "starter"
+    },
+    {
+      "id": "headset",
+      "name": "Headset",
+      "path": "/assets/avatar/accessories/headset/spritesheet.png",
+      "previewPath": "/assets/avatar/accessories/headset/preview.png",
+      "unlockType": "starter"
+    }
+  ],
+  "palettes": [
+    {
+      "id": "comet-blue",
+      "name": "Comet Blue",
+      "primary": "#5fd8ff"
+    },
+    {
+      "id": "sunset-red",
+      "name": "Sunset Red",
+      "primary": "#ff7676"
+    },
+    {
+      "id": "forest-green",
+      "name": "Forest Green",
+      "primary": "#61d47d"
+    },
+    {
+      "id": "violet-night",
+      "name": "Violet Night",
+      "primary": "#8a6bff"
+    },
+    {
+      "id": "sakura-pink",
+      "name": "Sakura Pink",
+      "primary": "#ff9fd4"
+    }
+  ]
+}

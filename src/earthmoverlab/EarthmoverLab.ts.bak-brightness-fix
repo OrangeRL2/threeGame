@@ -1,0 +1,211 @@
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
+import { EffectComposer } from 'three/examples/jsm/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/examples/jsm/postprocessing/RenderPass.js';
+import { EarthmoverRenderPixelatedPass } from './EarthmoverRenderPixelatedPass';
+import { EarthmoverPixelatePass } from './EarthmoverPixelatePass';
+
+const canvas = document.querySelector<HTMLCanvasElement>('#earthmover-canvas');
+if (!canvas) throw new Error('Missing canvas');
+const stats = document.querySelector<HTMLParagraphElement>('#stats');
+
+let pixelSize = 5;
+let useShader = true;
+let cameraAngle = Math.PI / 4;
+let cameraDistance = 8.8;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x85bed3);
+
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: false, alpha: false });
+renderer.setPixelRatio(1);
+renderer.setSize(window.innerWidth, window.innerHeight, false);
+renderer.shadowMap.enabled = true;
+
+const camera = new THREE.OrthographicCamera(-8, 8, 4.5, -4.5, 0.1, 80);
+const target = new THREE.Vector3(0, 0.6, 0);
+const renderResolution = new THREE.Vector2(1, 1);
+const composerTarget = new THREE.WebGLRenderTarget(window.innerWidth, window.innerHeight, {
+  depthTexture: new THREE.DepthTexture(window.innerWidth, window.innerHeight),
+  depthBuffer: true
+});
+composerTarget.texture.minFilter = THREE.NearestFilter;
+composerTarget.texture.magFilter = THREE.NearestFilter;
+const composer = new EffectComposer(renderer, composerTarget);
+const renderPass = new RenderPass(scene, camera);
+const renderPixelatedPass = new EarthmoverRenderPixelatedPass(renderResolution, scene, camera);
+const pixelatePass = new EarthmoverPixelatePass(renderResolution);
+composer.addPass(renderPass);
+composer.addPass(renderPixelatedPass);
+composer.addPass(pixelatePass);
+
+const models: THREE.Object3D[] = [];
+
+function updateResolution(): void {
+  renderer.setSize(window.innerWidth, window.innerHeight, false);
+  composer.setSize(window.innerWidth, window.innerHeight);
+  renderResolution.set(
+    Math.max(1, Math.floor(window.innerWidth / pixelSize)),
+    Math.max(1, Math.floor(window.innerHeight / pixelSize))
+  );
+  renderPixelatedPass.setResolution(renderResolution);
+  pixelatePass.setResolution(renderResolution);
+  const aspect = window.innerWidth / window.innerHeight;
+  const size = 5.0;
+  camera.left = -size * aspect;
+  camera.right = size * aspect;
+  camera.top = size;
+  camera.bottom = -size;
+  camera.updateProjectionMatrix();
+  updateStats();
+}
+
+function updateStats(): void {
+  if (!stats) return;
+  stats.textContent = `mode: ${useShader ? 'hello-threejs shader' : 'direct'} | pixelSize: ${pixelSize} | render: ${renderResolution.x}x${renderResolution.y}`;
+}
+
+function updateCamera(): void {
+  camera.position.set(Math.cos(cameraAngle) * cameraDistance, 5.8, Math.sin(cameraAngle) * cameraDistance);
+  camera.lookAt(target);
+}
+
+function pixelTexture(tex: THREE.Texture): THREE.Texture {
+  tex.magFilter = THREE.NearestFilter;
+  tex.minFilter = THREE.NearestFilter;
+  tex.generateMipmaps = false;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+function toPhongMaterial(source: any, fallback: THREE.ColorRepresentation): THREE.MeshPhongMaterial {
+  const map = source?.map ? pixelTexture(source.map) : null;
+  const color = source?.color instanceof THREE.Color ? source.color : new THREE.Color(fallback);
+  return new THREE.MeshPhongMaterial({
+    map,
+    color,
+    shininess: 0,
+    specular: 0x000000,
+    emissive: 0x000000,
+    flatShading: true,
+    transparent: Boolean(source?.transparent),
+    opacity: typeof source?.opacity === 'number' ? source.opacity : 1,
+    alphaTest: 0.02
+  });
+}
+
+function prepModel(root: THREE.Object3D, fallback: THREE.ColorRepresentation): void {
+  root.traverse((object) => {
+    const mesh = object as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    mesh.frustumCulled = false;
+    if (mesh.geometry) mesh.geometry.computeVertexNormals();
+    if (Array.isArray(mesh.material)) mesh.material = mesh.material.map((m) => toPhongMaterial(m as any, fallback));
+    else mesh.material = toPhongMaterial(mesh.material as any, fallback);
+  });
+}
+
+function normalize(root: THREE.Object3D, targetHeight: number): void {
+  root.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(root);
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  root.scale.setScalar(targetHeight / Math.max(0.001, size.y));
+  root.updateMatrixWorld(true);
+  const b2 = new THREE.Box3().setFromObject(root);
+  const center = new THREE.Vector3();
+  b2.getCenter(center);
+  root.position.x -= center.x;
+  root.position.z -= center.z;
+  root.position.y -= b2.min.y;
+}
+
+async function loadModel(path: string, fallback: THREE.ColorRepresentation, height: number, position: THREE.Vector3, spin = 0): Promise<void> {
+  try {
+    const gltf = await new GLTFLoader().loadAsync(path);
+    const root = gltf.scene;
+    prepModel(root, fallback);
+    normalize(root, height);
+    root.position.copy(position);
+    root.userData.spin = spin;
+    scene.add(root);
+    models.push(root);
+  } catch (e) {
+    console.warn('Failed to load model', path, e);
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(height * 0.5, height, height * 0.5), new THREE.MeshPhongMaterial({ color: fallback, flatShading: true }));
+    mesh.position.copy(position).add(new THREE.Vector3(0, height / 2, 0));
+    scene.add(mesh);
+    models.push(mesh);
+  }
+}
+
+function addBlock(x: number, z: number, w: number, h: number, d: number, color: number): void {
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), new THREE.MeshPhongMaterial({ color, flatShading: true, shininess: 0, specular: 0x000000 }));
+  mesh.position.set(x, h / 2, z);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  scene.add(mesh);
+}
+
+function buildWorld(): void {
+  scene.add(new THREE.AmbientLight(0x566678, 1.15));
+  const sun = new THREE.DirectionalLight(0xffe9a8, 0.75);
+  sun.position.set(4.5, 8, 3.5);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(1024, 1024);
+  scene.add(sun);
+
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(14, 9), new THREE.MeshPhongMaterial({ color: 0x6ea85d, flatShading: true }));
+  ground.rotation.x = -Math.PI / 2;
+  ground.receiveShadow = true;
+  scene.add(ground);
+
+  const palette = [0x85b263, 0xa5d773, 0x567b5f, 0xbdad8e, 0x8a8176];
+  for (let i = 0; i < 34; i++) {
+    addBlock((Math.random() - 0.5) * 12, (Math.random() - 0.5) * 7.5, 0.45 + Math.random() * 0.9, 0.08, 0.45 + Math.random() * 0.9, palette[i % palette.length]);
+  }
+  addBlock(-3.8, -1.7, 0.75, 2.6, 0.75, 0x8f8374);
+  addBlock(3.7, -1.2, 0.75, 2.9, 0.75, 0x8f8374);
+  addBlock(-4.2, 1.9, 0.65, 1.8, 0.65, 0x6f6974);
+  addBlock(4.4, 1.7, 0.65, 1.8, 0.65, 0x6f6974);
+  addBlock(0, 0.15, 3.8, 0.55, 2.3, 0xbbae91);
+  addBlock(0, -0.05, 2.4, 1.0, 1.2, 0xa89a80);
+}
+
+async function boot(): Promise<void> {
+  buildWorld();
+  await Promise.all([
+    loadModel('/assets/prototype/mmd/crystal_shrine/stylised_crystal_shrine.glb', 0x9b8f78, 1.75, new THREE.Vector3(-0.65, 0, 0.15), 0.18),
+    loadModel('/assets/prototype/mmd/crystal/crystal.glb', 0x3fb7ff, 0.75, new THREE.Vector3(0.95, 0.58, -0.38), 1.1),
+    loadModel('/assets/prototype/mmd/korone_256fes/inugami_korone_for_256fes.glb', 0xffc8a8, 1.05, new THREE.Vector3(2.1, 0, 1.2), 0)
+  ]);
+  updateCamera();
+  updateResolution();
+  renderer.setAnimationLoop(render);
+}
+
+function render(): void {
+  const dt = 1 / 60;
+  for (const model of models) model.rotation.y += (model.userData.spin || 0) * dt;
+  if (useShader) composer.render();
+  else renderer.render(scene, camera);
+}
+
+window.addEventListener('resize', updateResolution);
+window.addEventListener('keydown', (event) => {
+  if (event.key === '1') useShader = false;
+  if (event.key === '2') useShader = true;
+  if (event.key === '3') pixelSize = Math.max(2, pixelSize - 1);
+  if (event.key === '4') pixelSize = Math.min(10, pixelSize + 1);
+  if (event.key.toLowerCase() === 'q') cameraAngle -= 0.12;
+  if (event.key.toLowerCase() === 'e') cameraAngle += 0.12;
+  if (event.key.toLowerCase() === 'w') cameraDistance = Math.max(5.0, cameraDistance - 0.45);
+  if (event.key.toLowerCase() === 's') cameraDistance = Math.min(14, cameraDistance + 0.45);
+  if (event.key.toLowerCase() === 'r') { cameraAngle = Math.PI / 4; cameraDistance = 8.8; pixelSize = 5; useShader = true; }
+  updateCamera();
+  updateResolution();
+});
+
+void boot();

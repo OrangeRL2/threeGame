@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CardWorld Earthmover Pixel Lab</title>
+    <style>
+      html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #111827; color: #e5e7eb; font-family: system-ui, sans-serif; }
+      canvas { display: block; width: 100vw; height: 100vh; image-rendering: pixelated; }
+      #panel { position: fixed; left: 16px; top: 16px; width: 410px; padding: 14px 16px; border: 2px solid #67e8f9; border-radius: 14px; background: rgba(8, 13, 31, .88); box-shadow: 0 10px 34px rgba(0,0,0,.35); }
+      h1 { margin: 0 0 8px; font-size: 18px; }
+      p { margin: 5px 0; color: #cbd5e1; font-size: 13px; line-height: 1.35; }
+      code { color: #fef08a; font-weight: 800; }
+      #stats { color: #67e8f9; font-weight: 800; }
+      details { margin-top: 10px; border-top: 1px solid rgba(148,163,184,.26); padding-top: 8px; }
+      summary { cursor: pointer; user-select: none; font-weight: 800; color: #f8fafc; }
+      .control-row { display: grid; grid-template-columns: 142px 1fr 58px; align-items: center; column-gap: 8px; margin: 7px 0; font-size: 12px; }
+      .control-row label { color: #f8fafc; }
+      .control-row input[type="range"] { width: 100%; accent-color: #38bdf8; }
+      .control-value { background: rgba(255,255,255,.13); padding: 3px 6px; border-radius: 4px; color: #67e8f9; font-weight: 800; text-align: right; }
+      .check-row { display: flex; gap: 8px; align-items: center; margin: 8px 0 2px; font-size: 12px; color: #f8fafc; }
+      button { margin: 8px 6px 0 0; padding: 5px 9px; border-radius: 6px; border: 1px solid rgba(103,232,249,.7); background: rgba(56,189,248,.14); color: #e0f2fe; cursor: pointer; }
+      button:hover { background: rgba(56,189,248,.26); }
+    </style>
+  </head>
+  <body>
+    <canvas id="earthmover-canvas"></canvas>
+    <div id="panel">
+      <h1>Earthmover / hello-threejs style lab</h1>
+      <p id="stats">loading</p>
+      <p><code>WASD</code> moves the character. The character snaps to <code>north/south/west/east</code> facing directions like a pixel-art character.</p>
+      <p><code>1</code> direct ・ <code>2</code> shader ・ <code>Wheel</code> zoom ・ <code>Left drag</code> orbit ・ <code>Right drag</code> pan ・ <code>V</code> front view ・ <code>F</code> follow ・ <code>R</code> reset</p>
+      <details open>
+        <summary>Controls</summary>
+        <div class="control-row">
+          <label for="pixelSize">pixelSize</label>
+          <input id="pixelSize" type="range" min="1" max="10" step="1" value="3" />
+          <span id="pixelSizeValue" class="control-value">3</span>
+        </div>
+        <div class="control-row">
+          <label for="normalEdgeStrength">normalEdgeStrength</label>
+          <input id="normalEdgeStrength" type="range" min="0" max="2" step="0.05" value="0.35" />
+          <span id="normalEdgeStrengthValue" class="control-value">0.35</span>
+        </div>
+        <div class="control-row">
+          <label for="depthEdgeStrength">depthEdgeStrength</label>
+          <input id="depthEdgeStrength" type="range" min="0" max="2" step="0.05" value="0.35" />
+          <span id="depthEdgeStrengthValue" class="control-value">0.35</span>
+        </div>
+        <div class="control-row">
+          <label for="outlineInkStrength">outlineInkStrength</label>
+          <input id="outlineInkStrength" type="range" min="0" max="1" step="0.01" value="0.62" />
+          <span id="outlineInkStrengthValue" class="control-value">0.62</span>
+        </div>
+        <div class="control-row">
+          <label for="brightness">brightness</label>
+          <input id="brightness" type="range" min="0.5" max="1.8" step="0.01" value="1.05" />
+          <span id="brightnessValue" class="control-value">1.05</span>
+        </div>
+        <div class="control-row">
+          <label for="contrast">contrast</label>
+          <input id="contrast" type="range" min="0.5" max="2.2" step="0.01" value="1.05" />
+          <span id="contrastValue" class="control-value">1.05</span>
+        </div>
+        <div class="control-row">
+          <label for="saturation">saturation</label>
+          <input id="saturation" type="range" min="0" max="2.2" step="0.01" value="1.05" />
+          <span id="saturationValue" class="control-value">1.05</span>
+        </div>
+        <div class="control-row">
+          <label for="gamma">gamma</label>
+          <input id="gamma" type="range" min="0.55" max="1.45" step="0.01" value="1.00" />
+          <span id="gammaValue" class="control-value">1.00</span>
+        </div>
+        <div class="control-row">
+          <label for="shadowLift">shadowLift</label>
+          <input id="shadowLift" type="range" min="-0.25" max="0.25" step="0.01" value="0.00" />
+          <span id="shadowLiftValue" class="control-value">0.00</span>
+        </div>
+        <div class="check-row">
+          <input id="pixelAlignedPanning" type="checkbox" checked />
+          <label for="pixelAlignedPanning">pixelAlignedPanning</label>
+        </div>
+        <button id="presetSoft">Soft</button>
+        <button id="presetInk">Ink</button>
+        <button id="presetChunky">Chunky</button>
+        <br />
+        <button id="cameraIso">Iso</button>
+        <button id="cameraFront">Front</button>
+        <button id="cameraBack">Back</button>
+        <button id="cameraLeft">Left</button>
+        <button id="cameraRight">Right</button>
+        <button id="cameraFollow">Follow</button>
+      </details>
+    </div>
+    <script type="module" src="/src/earthmoverlab/EarthmoverLab.ts"></script>
+  </body>
+</html>

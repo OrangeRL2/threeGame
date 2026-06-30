@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>CardWorld 3D Style Lab</title>
+    <style>
+      html, body {
+        margin: 0;
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #101827;
+        color: #f8fafc;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      #stylelab-canvas {
+        width: 100vw;
+        height: 100vh;
+        display: block;
+        image-rendering: pixelated;
+      }
+      #stylelab-panel {
+        position: fixed;
+        left: 16px;
+        top: 16px;
+        width: 340px;
+        padding: 14px 16px;
+        border: 2px solid #38bdf8;
+        border-radius: 14px;
+        background: rgba(6, 12, 28, 0.82);
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+        backdrop-filter: blur(8px);
+        pointer-events: none;
+      }
+      #stylelab-panel h1 {
+        margin: 0 0 8px;
+        font-size: 18px;
+      }
+      #stylelab-panel p {
+        margin: 5px 0;
+        line-height: 1.35;
+        font-size: 13px;
+        color: #cbd5e1;
+      }
+      #stylelab-mode {
+        color: #67e8f9;
+        font-weight: 800;
+      }
+      .keyrow {
+        margin-top: 10px;
+        color: #e2e8f0;
+        font-size: 12px;
+      }
+      .keyrow code {
+        color: #fef08a;
+        font-weight: 800;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="stylelab-canvas"></canvas>
+    <div id="stylelab-panel">
+      <h1>CardWorld 3D Style Lab</h1>
+      <p>Mode: <span id="stylelab-mode">loading</span></p>
+      <p>This page isolates the GLB models, camera, lighting, outlines, and pixel-style postprocess from the real game.</p>
+      <div class="keyrow">
+        <code>1</code> Direct ・ <code>2</code> Flat ・ <code>3</code> Local outlines ・ <code>4</code> Postprocess ・ <code>5</code> Pixel upscale<br />
+        <code>Q/E</code> rotate camera ・ <code>W/S</code> zoom ・ <code>R</code> reset
+      </div>
+    </div>
+    <script type="module" src="/src/stylelab/StyleLab.ts"></script>
+  </body>
+</html>

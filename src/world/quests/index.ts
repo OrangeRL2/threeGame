@@ -1,0 +1,1 @@
+import type { QuestDef } from './questTypes'; import { townFacilityTourQuest } from './townFacilityTour'; export const quests:QuestDef[]=[townFacilityTourQuest]; export { townFacilityTourQuest };
